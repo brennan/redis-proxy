@@ -3,36 +3,12 @@ const redis = require('redis')
 const { promisify } = require('util')
 const mcache = require('memory-cache')
 
-const client = redis.createClient(6379)
+const client = redis.createClient(6379) // make configurable
 const get = promisify(client.get).bind(client)
 
 const app = express()
 
-const asyncMiddleware = fn =>
-  (req, res, next) => {
-    Promise.resolve(fn(req, res, next))
-      .catch(next)
-  }
-
-const cache = (duration) => {
-  return (req, res, next) => {
-    let key = req.query.key
-    let cachedBody = mcache.get(key)
-    if (cachedBody) {
-      res.send(cachedBody)
-      return
-    } else {
-      res.sendResponse = res.send
-      res.send = (body) => {
-        mcache.put(key, body, duration * 1000)
-        res.sendResponse(body)
-      }
-      next()
-    }
-  }
-}
-
-var duration = 1000
+var duration = 1000000 // make configurable
 var isReady = false
 
 client.on('connect', () => {
@@ -41,24 +17,14 @@ client.on('connect', () => {
   client.get("foo_rand000000000000", redis.print)
 })
 
-app.get('/', asyncMiddleware(async (req, res, next) => {
-  console.log('async middleware')
-  if (!req.query.key) {
-    res.send('Make sure your GET requests include a querystring containing a \"key\" and a \"value\", for example, \"?key=value\"')
-    return
-  }
-
-  var result = await get(req.query.key)
-
-  if (result) {
-    res.send(result)
-  } else {
-    res.send('Redis couldn\'t find a value for this key.')
-  }
-}))
+app.get('/')
 
 app.get('/health', (req, res) =>
   res.send('The proxy is up and running.')
+)
+
+app.get('/favicon.ico', (req, res) =>
+  res.json('ignore')
 )
 
 app.use((req, res, next) => {
@@ -71,6 +37,47 @@ app.use((req, res, next) => {
   }
   next()
 })
+
+const asyncMiddleware = fn =>
+  (req, res, next) => {
+    Promise.resolve(fn(req, res, next))
+      .catch(next)
+  }
+
+app.use(asyncMiddleware(async (req, res, next) => {
+  console.log('async middleware')
+  console.log('req', req.query)
+  if (!req.query.key) {
+    res.send('Make sure your GET requests include a querystring containing a \"key\" and a \"value\", for example, \"?key=value\"')
+    return
+  }
+
+  var result = await get(req.query.key)
+
+  if (result) {
+    req.result = result
+    next()
+  } else {
+    res.send('Redis couldn\'t find a value for this key.')
+  }
+}))
+
+const cache = (duration) => { // key store size should be configurable
+  return (req, res, next) => {
+    console.log('entering cacheing function')
+    let key = req.query.key
+    let cachedBody = mcache.get(key)
+    if (cachedBody) {
+      console.log('sending cached body')
+      res.send(cachedBody)
+    } else {
+      mcache.put(req.query.key, req.result, duration * 1000)
+      console.log(req.query.key + 'has been cached')
+      res.send(req.result)
+    }
+    next()
+  }
+}
 
 app.use(cache(duration))
 
